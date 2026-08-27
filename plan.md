@@ -1,187 +1,314 @@
+# Project Plan — Modular Agent Capability Skills
 
-# Conversation Summary: What You Want to Build (Detailed Version)
+## 1. Project Goal
 
-## 1. Goal: Give Agents/LLMs “External Capabilities” Instead of Building an All-in-One Proxy
+Build a collection of small, composable CLI tools that give LLM agents capabilities they may not natively have.
 
-At first, you wanted to build a **Claude/Anthropic API-compatible proxy** that would allow clients such as Claude Code to *think* they were using Claude, while actually running an open-source model underneath. The proxy would also intercept capability gaps such as image understanding and web search, then provide those capabilities through additional models/services.
+The system should **not** replace the underlying LLM and should **not** act as a proxy for Claude, Anthropic, OpenAI, or any other model provider.
 
-Later, you narrowed the direction into something lighter and more focused:
+Instead, an Agent calls these tools when it needs additional capabilities.
 
-> **Do not build a proxy or replace the model.**
-> Instead, build an **“Agent Skill” system** that allows any LLM/Agent to gain capabilities such as vision, search, and web fetching through CLI tools.
+The initial capability set is:
 
-The core motivation is that this approach is more general, has lower coupling, is easier to evolve, and avoids being locked into a specific client protocol such as Claude Code or the Anthropic API.
+* `modlens` — vision
+* `modsearch` — web search
+* `modfetch` — web-page fetching
 
----
+The core architecture is:
 
-## 2. Core Principle: One Skill Does One Thing
+```text
+                         LLM / Agent
+                              │
+              ┌───────────────┼───────────────┐
+              │               │               │
+              ▼               ▼               ▼
+          modlens         modsearch       modfetch
+           Vision           Search          Fetch
+              │               │               │
+              ▼               ▼               ▼
+        Image → Text     Query → URLs     URL → Text
+```
 
-You established an important product principle:
-
-* **One skill should do only one thing.**
-* Do not build an “everything-in-one” tool.
-* Do not put multiple responsibilities into a single CLI.
-* Let the Agent or higher-level orchestrator combine the tools.
-* Keep the underlying tools simple and single-purpose.
-
-Therefore, the capabilities are split into three independent external tools:
-
-1. **modlens** — vision only
-2. **modsearch** — search only
-3. **modfetch** — web-page fetching only
-
-They should work together as a **pipeline**, rather than having one tool internally perform the entire workflow.
-
----
-
-## 3. The Actual Capability Gaps You Want to Solve
-
-### 3.1 Vision Extension — `modlens`
-
-Motivation: many open-source or text-only models do not have multimodal capabilities. You want an external tool to fill that gap.
-
-Workflow:
-
-* **Input:** An image provided by the user, such as a screenshot, document, photograph, chart, etc.
-* **Processing:** OCR or image captioning, with VQA potentially added later.
-* **Output:** Structured **textual evidence** describing the image.
-* **Usage:** The higher-level Agent injects this output into the model's context so that a text-only LLM can reason about the image.
-
-Essentially, you are building:
-
-> **image → text evidence adapter**
-
-This allows a non-multimodal model to consume image information through text.
+The Agent is responsible for deciding **when and how to compose these capabilities**.
 
 ---
 
-### 3.2 Search Extension — `modsearch`
+# 2. Core Design Principles
 
-Motivation: many Agents/models do not have reliable web-search capabilities, or different clients implement search differently.
+## 2.1 One Skill, One Responsibility
 
-The external tool provides a standardized interface:
+Every module should have one clearly defined responsibility.
 
-* **Input:** Search query
-* **Output:** A list of results containing things such as:
+* `modlens` should only handle vision.
+* `modsearch` should only handle search.
+* `modfetch` should only handle fetching.
 
-  * title
-  * URL
-  * snippet
-  * etc.
-* **Usage:** The Agent searches first, then decides which URLs are worth fetching.
+Do not turn one CLI into an all-in-one research assistant.
 
-The important point is that `modsearch` **does not fetch and summarize the pages**. Its job is simply to search.
+For example:
 
----
+```text
+Bad:
 
-### 3.3 Fetch Extension — `modfetch`
+modresearch
+ ├── search
+ ├── fetch
+ ├── summarize
+ ├── OCR
+ └── citation generation
+```
 
-Motivation: search only gives you links. To allow the model to actually read a webpage, you need a separate fetching capability.
+Instead:
 
-Workflow:
+```text
+Good:
 
-* **Input:** URL
-* **Output:** The page's main textual content.
-* For HTML pages, extract the visible/main text.
-* For non-HTML content, perform best-effort extraction.
-* **Usage:** The Agent takes selected URLs from `modsearch`, calls `modfetch`, and then gives the extracted content to the LLM for summarization or citation.
+modsearch → find information
+modfetch  → retrieve information
+modlens   → understand images
+LLM       → reason, summarize, decide
+```
 
-So the separation becomes:
-
-> `modsearch` → find URLs
-> `modfetch` → retrieve page content
-> LLM → understand/summarize the content
-
----
-
-## 4. Interaction/Calling Experience: Minimal, Flat, Agent-Friendly
-
-You emphasized that these tools are primarily **for Agents to call**, rather than humans repeatedly typing commands.
-
-Therefore, you want:
-
-* **No nested subcommands**
-
-  * Avoid something like `modlens extract ...`
-* Use flat arguments instead:
-
-  * `modlens -i ./img.png`
-* Keep commands short.
-* Keep parameters short.
-* Make behavior predictable.
-
-The underlying goal is:
-
-> **Minimize the cost of an Agent calling the tool and minimize failure points.**
-
-Fewer parsing layers and fewer state branches should mean fewer opportunities for tool-call errors.
+Composition belongs to the Agent or higher-level orchestrator.
 
 ---
 
-## 5. Distribution Strategy: Pure JS/TS + npm
+## 2.2 Low Coupling
 
-You considered the trade-off between Go and JavaScript/TypeScript, particularly around **distribution and installation friction**.
+The tools should not depend on a particular Agent implementation.
 
-### 5.1 Why You Rejected/Deprioritized Go
+They should work with:
 
-You considered building the CLI in Go and then:
+* Claude Code
+* Codex
+* other coding agents
+* custom LLM agents
+* future agent frameworks
 
-* Cross-compiling for different platforms
-* Publishing binaries through GitHub Releases
-* Having the Agent detect the platform and download the appropriate binary
+Avoid designing around a single client's proprietary tool protocol.
 
-However, you realized that this introduces many potential friction points:
-
-* Maintaining multiple OS/architecture combinations
-* macOS execution permissions, Gatekeeper, and quarantine issues
-* Windows path and permission issues
-* Potential antivirus/security-software false positives
-* Asking users to install Go and compile the project themselves is inconvenient
-
-This becomes especially awkward if the target users are simply friends or people who want the tool to work immediately.
+The CLI should provide a simple, stable interface that any Agent capable of executing commands can use.
 
 ---
 
-### 5.2 Why You Chose JS/TS + npm
+## 2.3 Agent-Oriented Design
 
-You concluded that **JS/TS with npm** is more practical.
+These tools are primarily designed to be invoked by Agents rather than manually operated by humans.
 
-Your assumptions are:
+Therefore:
 
-* People using AI coding tools such as Codex or Claude Code are likely to already have Node.js installed.
-* npm makes it easier for an Agent to automatically install, update, and run the tool.
-* You avoid maintaining cross-platform binaries.
-* You avoid creating a complicated release/build pipeline.
+* commands should be short;
+* arguments should be predictable;
+* output should be machine-readable where appropriate;
+* failures should be explicit;
+* unnecessary interaction should be avoided;
+* avoid interactive prompts whenever possible.
 
-Therefore, your current decision is:
-
-> **Pure JS/TS, distributed through npm and executed directly.**
-
-The objective is to make the installation path as short and reliable as possible.
+The goal is to minimize the Agent's tool-call complexity.
 
 ---
 
-## 6. The Final Experience You Want From the Agent's Perspective
+# 3. Package Structure
 
-Your external capability system should enable an Agent to work like this:
+The initial ecosystem consists of three independent packages.
 
-### When the user provides an image
+## 3.1 `modlens`
+
+Purpose:
+
+> Convert image information into textual evidence that an LLM can consume.
+
+Example:
+
+```bash
+modlens -i ./image.png
+```
+
+Basic pipeline:
+
+```text
+Image
+  ↓
+modlens
+  ↓
+Vision backend
+  ↓
+Structured text evidence
+  ↓
+Agent context
+```
+
+### V1 Backend
+
+The initial implementation will use **Gemini CLI** as the vision backend.
+
+`modlens` should act as an adapter around the backend rather than tightly coupling the entire project to Gemini.
+
+Conceptually:
+
+```text
+                 modlens
+                    │
+                    ▼
+            Vision Backend API
+                    │
+             ┌──────┴──────┐
+             ▼             ▼
+        Gemini CLI      Future engines
+             │
+             ▼
+       Textual Evidence
+```
+
+### Future Backends
+
+Potential future backends include:
+
+* PaddleOCR
+* DeepSeek OCR
+* other multimodal models
+* other OCR engines
+* local vision models
+
+The backend should therefore be replaceable without changing the fundamental `modlens` interface.
+
+---
+
+## 3.2 `modsearch`
+
+Purpose:
+
+> Search the web and return candidate results.
+
+Example:
+
+```bash
+modsearch "latest NVIDIA earnings"
+```
+
+Expected conceptual output:
+
+```text
+[
+  {
+    "title": "...",
+    "url": "...",
+    "snippet": "..."
+  }
+]
+```
+
+`modsearch` should **not**:
+
+* fetch the pages;
+* summarize the pages;
+* decide which result is relevant;
+* perform the entire research workflow.
+
+Its responsibility ends at providing search results.
+
+The Agent decides which URLs should be fetched.
+
+---
+
+## 3.3 `modfetch`
+
+Purpose:
+
+> Retrieve readable content from a URL.
+
+Example:
+
+```bash
+modfetch "https://example.com/article"
+```
+
+Basic pipeline:
+
+```text
+URL
+ ↓
+modfetch
+ ↓
+HTTP request
+ ↓
+Content extraction
+ ↓
+Readable text
+```
+
+For HTML:
+
+```text
+HTML
+ ↓
+Extract visible/main content
+ ↓
+Text
+```
+
+For non-HTML content:
+
+```text
+Resource
+ ↓
+Best-effort extraction
+ ↓
+Text
+```
+
+`modfetch` should not become a search engine or summarization tool.
+
+---
+
+# 4. Intended Agent Workflows
+
+## 4.1 Image Workflow
+
+When a user provides an image:
 
 ```text
 User
  ↓
-Agent
+Agent detects image
  ↓
-modlens
+Agent calls modlens
  ↓
-Textual image evidence
+modlens extracts textual evidence
  ↓
-Agent context
+Agent adds evidence to context
  ↓
-LLM reasoning/summarization
+LLM reasons about the image
 ```
 
-### When the user asks for information requiring the web
+Example:
+
+```text
+User:
+"What does this screenshot mean?"
+
+Agent:
+→ modlens -i screenshot.png
+
+modlens:
+→ textual description/evidence
+
+Agent:
+→ provides evidence to LLM
+
+LLM:
+→ explains screenshot
+```
+
+The LLM remains responsible for reasoning.
+
+`modlens` provides the evidence.
+
+---
+
+## 4.2 Web Research Workflow
+
+When a user asks for information requiring the web:
 
 ```text
 User
@@ -190,52 +317,488 @@ Agent
  ↓
 modsearch
  ↓
-Candidate URLs
+Search results
  ↓
 Agent selects relevant URLs
  ↓
 modfetch
  ↓
-Webpage content
+Page text
  ↓
-LLM reasoning/summarization/citation
+LLM
+ ↓
+Answer / summary / citations
 ```
 
-The important part is that **the Agent controls the workflow**.
+Example:
 
-The individual tools do not need to understand the entire workflow.
+```text
+modsearch "latest Malaysia inflation rate"
+        ↓
+    search results
+        ↓
+Agent selects relevant sources
+        ↓
+modfetch <selected URL>
+        ↓
+    article text
+        ↓
+LLM analyzes information
+```
+
+The tools remain independent.
 
 ---
 
-## 7. Naming and Product Positioning
+# 5. CLI Design
 
-The names you have settled on are:
+## 5.1 Flat Commands
 
-* **Vision extension:** `modlens`
-* **Search extension:** `modsearch`
-* **Fetch extension:** `modfetch`
+Avoid nested commands.
 
-The naming convention is consistent:
+Preferred:
 
-* `mod*` represents an external/module capability.
-* The suffix represents the specific capability:
+```bash
+modlens -i image.png
+```
 
-  * `lens` → vision
-  * `search` → search
-  * `fetch` → fetching
+Not:
 
-This naming scheme also leaves room for future extensions, such as:
+```bash
+modlens image extract --input image.png
+```
 
-* `modpdf`
-* `modaudio`
-* `modcache`
-* `modtranslate`
-* etc.
+Similarly:
 
-But the same principle should remain:
+```bash
+modsearch "query"
+```
 
-> **Each module should have one clear responsibility.**
+and:
 
-### One-sentence product definition
+```bash
+modfetch "https://example.com"
+```
 
-> **A modular CLI skill system that gives any LLM Agent external capabilities such as vision, web search, and web fetching without replacing the underlying model or depending on a specific Agent/client protocol.**
+The interface should remain shallow.
+
+---
+
+## 5.2 Short and Predictable Flags
+
+Prefer simple arguments such as:
+
+```text
+-i    input image
+-o    output
+-f    output format
+```
+
+Exact flags should be finalized during implementation.
+
+Avoid exposing unnecessary configuration unless it is required.
+
+---
+
+## 5.3 Machine-Friendly Output
+
+Because Agents are the primary consumers, output should be easy for an LLM or wrapper process to parse.
+
+Where appropriate, support structured output such as JSON.
+
+For example:
+
+```json
+{
+  "title": "Example Article",
+  "url": "https://example.com",
+  "content": "..."
+}
+```
+
+Human-readable output may still be supported, but machine-readable output should be treated as an important design requirement.
+
+---
+
+# 6. Distribution
+
+## 6.1 Technology Choice
+
+The project will use:
+
+* JavaScript / TypeScript
+* Node.js
+* npm
+
+The initial goal is to distribute the tools through npm rather than compiled platform-specific binaries.
+
+Example conceptual installation:
+
+```bash
+npm install -g modlens
+```
+
+or execution through npm tooling where appropriate.
+
+---
+
+## 6.2 Why Not Go Binaries?
+
+Go was considered for the CLI, particularly because it produces standalone executables.
+
+However, cross-platform binary distribution introduces additional complexity:
+
+* OS/architecture combinations
+* release artifacts
+* executable permissions
+* macOS Gatekeeper/quarantine
+* Windows security software
+* installation and update handling
+
+Using Node.js/npm reduces much of this distribution complexity for the intended audience.
+
+This decision can be revisited if real-world usage demonstrates that native binaries provide a significant advantage.
+
+---
+
+# 7. Repository Strategy
+
+The modules should remain conceptually independent.
+
+Possible structure:
+
+```text
+modlens/
+modsearch/
+modfetch/
+```
+
+Each package should have:
+
+* its own CLI;
+* its own README;
+* its own dependencies;
+* its own tests;
+* its own release lifecycle.
+
+If a monorepo becomes useful later, the packages can still remain independently usable and publishable.
+
+The important requirement is **logical independence**, not whether the Git repositories are physically separate.
+
+---
+
+# 8. `modlens` Backend Architecture
+
+`modlens` should not hard-code the assumption that Gemini is the only possible vision engine.
+
+The internal architecture should conceptually separate:
+
+```text
+CLI
+ │
+ ▼
+Input handling
+ │
+ ▼
+Vision abstraction
+ │
+ ├── Gemini CLI
+ ├── PaddleOCR
+ ├── DeepSeek OCR
+ └── Future backend
+ │
+ ▼
+Normalized evidence
+ │
+ ▼
+CLI output
+```
+
+This allows future engines to be added without redesigning the public CLI.
+
+For example:
+
+```bash
+modlens -i screenshot.png
+```
+
+should remain valid even if the underlying backend changes.
+
+---
+
+# 9. Error Handling
+
+Tools should fail clearly and predictably.
+
+Errors should distinguish between cases such as:
+
+* invalid arguments;
+* missing input;
+* invalid URL;
+* network failure;
+* backend failure;
+* authentication/configuration failure;
+* unsupported content;
+* extraction failure.
+
+Avoid silently returning misleading output.
+
+An Agent should be able to determine whether:
+
+```text
+success
+```
+
+or:
+
+```text
+tool failed
+```
+
+occurred.
+
+Exit codes should therefore be considered part of the CLI contract.
+
+---
+
+# 10. Security Considerations
+
+Because `modfetch` accepts arbitrary URLs, security must be considered from the beginning.
+
+Potential concerns include:
+
+* malicious URLs;
+* redirects;
+* very large responses;
+* request timeouts;
+* unsupported protocols;
+* localhost/internal network access;
+* resource exhaustion.
+
+The implementation should establish reasonable limits rather than blindly fetching anything indefinitely.
+
+Similarly, `modlens` should avoid unnecessarily exposing credentials or sensitive environment information to external vision backends.
+
+---
+
+# 11. What the Tools Should NOT Do
+
+The project should deliberately avoid scope expansion during the initial implementation.
+
+### `modlens` should NOT become:
+
+* a general chatbot;
+* a search engine;
+* a web scraper;
+* a document-management system;
+* an autonomous research agent.
+
+### `modsearch` should NOT become:
+
+* a webpage reader;
+* a summarizer;
+* an autonomous researcher.
+
+### `modfetch` should NOT become:
+
+* a search engine;
+* a summarizer;
+* an LLM agent.
+
+The LLM/Agent remains the reasoning and orchestration layer.
+
+---
+
+# 12. Initial Development Priority
+
+Development should proceed in small, independently testable stages.
+
+## Phase 1 — `modlens`
+
+Build the first usable capability:
+
+```text
+image
+ ↓
+modlens
+ ↓
+Gemini CLI
+ ↓
+structured text evidence
+```
+
+Goals:
+
+* establish CLI interface;
+* establish input/output contract;
+* implement Gemini backend;
+* normalize output;
+* implement basic error handling;
+* test with screenshots, documents, photos, and charts.
+
+---
+
+## Phase 2 — `modsearch`
+
+Build a standalone search CLI.
+
+Goals:
+
+* accept a query;
+* perform search;
+* return structured results;
+* handle search failures;
+* keep output predictable.
+
+The exact search backend can be selected separately from the CLI design.
+
+---
+
+## Phase 3 — `modfetch`
+
+Build the URL-to-text capability.
+
+Goals:
+
+* accept URLs;
+* retrieve pages;
+* extract readable content;
+* handle redirects;
+* handle failures/timeouts;
+* support structured output.
+
+---
+
+## Phase 4 — Agent Integration
+
+After the individual tools work independently, test them from actual Agents.
+
+Test workflows such as:
+
+```text
+Agent → modlens
+Agent → modsearch
+Agent → modsearch → modfetch
+```
+
+The goal is to verify that the tools are genuinely useful when called by an Agent rather than merely working as standalone CLIs.
+
+---
+
+# 13. Success Criteria
+
+The project is successful if an Agent can acquire capabilities it does not natively possess without needing a specialized integration.
+
+### Vision
+
+```text
+Agent + modlens
+=
+text-only Agent capable of consuming image evidence
+```
+
+### Search
+
+```text
+Agent + modsearch
+=
+Agent capable of discovering web sources
+```
+
+### Fetch
+
+```text
+Agent + modfetch
+=
+Agent capable of reading web content
+```
+
+### Composition
+
+```text
+Agent + modsearch + modfetch
+=
+Agent capable of performing web-based research
+```
+
+The critical requirement is that the Agent remains in control.
+
+---
+
+# 14. Future Extensions
+
+The `mod*` naming convention allows additional capabilities to be introduced later.
+
+Potential examples:
+
+```text
+modpdf
+modaudio
+modcache
+modtranslate
+modvideo
+```
+
+However, every new module must follow the same rule:
+
+> **One module = one capability.**
+
+A new module should only be created when the capability is sufficiently distinct to justify an independent interface.
+
+---
+
+# 15. Current Decisions
+
+The following decisions are currently considered established:
+
+| Decision                                | Status            |
+| --------------------------------------- | ----------------- |
+| Build an Anthropic/Claude proxy         | Rejected          |
+| Replace the underlying LLM              | Rejected          |
+| Build standalone Agent capability tools | **Yes**           |
+| One skill = one responsibility          | **Yes**           |
+| `modlens`                               | **Yes**           |
+| `modsearch`                             | **Yes**           |
+| `modfetch`                              | **Yes**           |
+| Flat CLI interface                      | **Yes**           |
+| Agent handles composition               | **Yes**           |
+| JS/TS                                   | **Yes**           |
+| npm distribution                        | **Yes**           |
+| `modlens` V1 backend                    | **Gemini CLI**    |
+| Pluggable vision backends               | **Yes**           |
+| PaddleOCR / DeepSeek OCR                | Future candidates |
+| All-in-one research CLI                 | **No**            |
+
+---
+
+# 16. Current Scope
+
+The immediate objective is **not** to build a complete Agent framework.
+
+The immediate objective is to prove that a small set of independent CLI capabilities can effectively extend an existing Agent.
+
+The first milestone is therefore:
+
+```text
+                 Existing Agent
+                       │
+                       ▼
+                    modlens
+                       │
+                       ▼
+                Image → Evidence
+```
+
+Once this works reliably, expand the ecosystem with:
+
+```text
+modsearch
+    +
+modfetch
+```
+
+The long-term vision is a collection of small, composable capability modules that Agents can discover and invoke as needed.
+
+> **The model provides intelligence.
+> The Agent provides orchestration.
+> The `mod*` tools provide capabilities.**
