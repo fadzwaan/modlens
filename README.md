@@ -23,75 +23,115 @@ your text-only model ──▶ modlens skill (auto-triggers on images)
 ```
 
 Install the skill once, and your agent handles images by itself. No model switch, no API key, no prompt surgery.
-[中文说明](README.zh-CN.md)
 
-## Features
+## Quick start
 
-- Built for non-vision LLM setups (text-only models + external vision bridge)
-- Supports local image paths and remote image URLs
-- Pluggable vision backend — ships with Gemini CLI; more engines (PaddleOCR, DeepSeek, etc.) planned
-- Outputs machine-consumable JSON (OCR + layout + semantics + visual clues)
-- Designed to be called from Agent Skills (Claude Code, Codex, Cursor, etc.)
-
-## Install
+**1. Install Antigravity CLI and sign in** (one-time):
 
 ```bash
-npm install -g @liustack/modlens
+curl -fsSL https://antigravity.google/cli/install.sh | bash
+agy    # opens browser sign-in, then exit
 ```
 
-The default backend requires Gemini CLI to be installed and authenticated:
+**2. Install the skill** — tell your agent (Claude Code, Codex, OpenClaw, Cursor, ...):
+
+```text
+Install the skill from https://github.com/liustack/modlens
+```
+
+or do it yourself:
 
 ```bash
-npm install -g @google/gemini-cli
-gemini
+npx -y skills add liustack/modlens
 ```
 
-Or run with `npx`:
+**3. Use it.** Drop an image path into the chat and ask anything. The skill triggers automatically whenever your model needs eyes.
+
+## See it work
 
 ```bash
-npx @liustack/modlens [options]
+npx @liustack/modlens -i workflow.jpg
 ```
 
-## Usage
+Real output, truncated:
+
+```json
+{
+  "image": "/Users/dev/projects/liustack/assets/loop.jpg",
+  "provider": "antigravity-cli",
+  "result": {
+    "summary": "A workflow diagram with four nodes connected by labeled arrows.",
+    "ocr": {
+      "full_text": "/shaping\nBEFORE YOU BUILD\n\n/coding\nWHILE YOU BUILD\n\nIT BREAKS\n/dig\nROOT CAUSE FIRST\n...",
+      "lines": [
+        { "language": "en", "text": "/shaping" },
+        { "language": "en", "text": "BEFORE YOU BUILD" }
+      ]
+    },
+    "layout": { "regions": [ { "reading_order": 1, "text": "/shaping BEFORE YOU BUILD", "type": "other" } ] },
+    "uncertainty": []
+  },
+  "meta": { "model": "gemini-3.6-flash-low", "durationSeconds": 25.4 }
+}
+```
+
+A run takes 15-40 seconds. The JSON structure is enforced by schema at the provider level, so your agent never has to fish JSON out of markdown again.
+
+## CLI reference
 
 ```bash
-# Print JSON result to stdout
-modlens -i screenshot.png
-
-# Save to file
-modlens -i screenshot.png -o lens.json
-
-# Specify model + extra prompt constraints
-modlens -i screenshot.png -m gemini-2.5-flash --prompt "Focus on table structure"
+modlens -i <image-path-or-url> [options]
 ```
 
-## Options
+| Flag | Meaning | Default |
+| :-- | :-- | :-- |
+| `-i, --input <path\|url>` | Image to analyze (required) | |
+| `-o, --output <path>` | Also write JSON to a file | |
+| `-m, --model <name>` | Provider model | `gemini-3.6-flash-low` |
+| `-p, --provider <name>` | Vision provider | `antigravity-cli` |
+| `--prompt <text>` | Extra focus, e.g. `"extract the table"` | |
+| `--timeout <ms>` | Provider timeout | `180000` |
+| `--provider-bin <path>` | Provider binary | `agy` |
+| `--workdir <path>` | Working directory for the provider | |
 
-| Flag | Description |
-|------|-------------|
-| `-i, --input <path>` | Input image path (required) |
-| `-o, --output <path>` | Write result JSON to a file |
-| `-m, --model <name>` | Vision model name (backend-specific) |
-| `--prompt <text>` | Extra extraction constraints |
-| `--timeout <ms>` | Timeout in milliseconds (default: `180000`) |
-| `--gemini-bin <path>` | Gemini CLI binary path (default: `gemini`) |
+Use `-m gemini-3.1-pro-high` for dense screenshots or hard documents. Output contract: [skills/modlens/references/output-schema.md](skills/modlens/references/output-schema.md).
 
-## Vision Backends
+## Using it in Codex (DeepSeek and friends)
 
-ModLens uses a pluggable architecture for vision recognition. The current v1 ships with **Gemini CLI** as the default backend. Future versions will support additional engines such as PaddleOCR, DeepSeek OCR, and other multimodal/vision-capable models.
+Codex only speaks the Responses API, and DeepSeek's official endpoint supports it natively. Follow the [official integration guide](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/) first: its `models.json` declares deepseek-v4-flash as text-only (`input_modalities: ["text"]`), which is the key that unlocks the whole flow.
 
-## Agent Skill
+With that in place, pasted and attached images just work: Codex strips the pixels before they reach your model but keeps a `<image name=[Image #1] path="/tmp/....png">` text tag in the message, and the modlens skill picks the path up from there. Verified end to end with deepseek-v4-flash: the model reads the tag, calls modlens, and answers with full image content.
 
-- [modlens/SKILL.md](skills/modlens/SKILL.md)
+Without `models.json` (a bare custom-model config), Codex assumes your model accepts images and sends them raw, and whether that survives depends on the provider's lenience. The always-safe move in any harness: skip the paste, drag the image file into the terminal (or type its path) so the path arrives as plain text.
 
-## Notes
+## Why a bridge instead of a multimodal model?
 
-- `modlens` focuses on visual parsing only.
-- `modsearch` and `modfetch` belong to separate projects and are intentionally out of scope.
+- **Keep your model.** You picked DeepSeek-V4-Flash (or gpt-oss, or whatever) for its price and reasoning. ModLens adds sight without touching that choice.
+- **Evidence beats pixels.** Text models reason best over structured text. ModLens hands them OCR plus layout plus semantics, not a base64 blob.
+- **Engines die, the bridge survives.** v1 ran on Gemini CLI's free tier until Google shut it down in June 2026. v2 runs on its successor, Antigravity CLI, behind the same provider interface, so the next engine swap is one file, not a rewrite.
+
+ModSearch, the sibling project, does the same trick for web search and page fetching: [liustack/modsearch](https://github.com/liustack/modsearch).
+
+## Built with liustack
+
+ModLens v2 was shaped, coded, and shipped with **[liustack](https://github.com/liustack/liustack)** — four Agent Skills, one loop: `shaping` before you build, `coding` while you build, `dig` when it breaks, `snapshot` when you hand off. A lighter, sharper alternative to Superpowers.
+
+**If ModLens just gave your model eyes, liustack gives your whole workflow discipline:**
+
+```bash
+npx -y skills add liustack/liustack -g
+```
+
+⭐ Like the idea? [Star ModLens](https://github.com/liustack/modlens) and [star liustack](https://github.com/liustack/liustack). Stars are how the next developer finds them.
+
+## Security notes
+
+- ModLens invokes `agy` with `--dangerously-skip-permissions`, because print mode skips tool calls without it. The prompt restricts the agent to reading the one image, and instructs it to treat image content as data, never as instructions. Still, only analyze images you would open yourself, and prefer running inside a sandboxed workspace.
+- Vision output is evidence, not gospel: fields the engine cannot read land in `uncertainty` instead of being invented. Pixel bboxes and confidence scores were removed in v2 because models fabricate them.
 
 ## Disclaimer
 
-This project is for **personal learning and experimentation only**. It is not intended for commercial use.
+Personal learning and experimentation only. Not for commercial use. Antigravity CLI usage falls under your own Google account terms and quota.
 
 ## License
 
