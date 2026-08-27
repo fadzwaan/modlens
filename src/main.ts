@@ -1,69 +1,58 @@
-export function buildVisionPrompt(imageAbsolutePath: string, extraPrompt?: string): string {
-    const basePrompt = `Analyze this image: ${imageAbsolutePath}
+#!/usr/bin/env node
 
-You are an image parsing engine.
-Analyze the provided image.
+declare const __APP_VERSION__: string;
 
-Goal: Convert all image information into structured results consumable by a text-only LLM.
+import { Command } from 'commander';
+import * as fs from 'fs';
+import * as path from 'path';
+import { analyzeImage } from './analyzer.ts';
 
-Strict requirements:
-1. Output JSON only. No Markdown, no explanatory text.
-2. Cover all visible text, semantics, structure, layout, and visual clues as thoroughly as possible.
-3. If any information is uncertain, note it in the uncertainty field.
+const program = new Command();
 
-Output JSON structure:
-{
-  "summary": "",
-  "ocr": {
-    "full_text": "",
-    "lines": [
-      {
-        "text": "",
-        "language": "",
-        "confidence": 0
-      }
-    ]
-  },
-  "layout": {
-    "regions": [
-      {
-        "id": "",
-        "type": "title|subtitle|paragraph|list|table|chart|form|image|icon|other",
-        "bbox": { "x": 0, "y": 0, "w": 0, "h": 0 },
-        "reading_order": 1,
-        "text": ""
-      }
-    ]
-  },
-  "semantics": {
-    "scene": "",
-    "intent": "",
-    "entities": [
-      {
-        "name": "",
-        "type": "",
-        "evidence": ""
-      }
-    ],
-    "relations": [
-      {
-        "subject": "",
-        "predicate": "",
-        "object": ""
-      }
-    ]
-  },
-  "visual": {
-    "dominant_colors": [""],
-    "style": "",
-    "notes": [""]
-  },
-  "uncertainty": [""]
-}`;
+program
+    .name('modlens')
+    .description('Plug-in vision for text-only LLMs: image in, structured JSON evidence out')
+    .version(__APP_VERSION__)
+    .requiredOption('-i, --input <path|url>', 'Input image path or https URL')
+    .option('-o, --output <path>', 'Write result JSON to a file')
+    .option('-m, --model <name>', 'Provider model name (default: gemini-3.6-flash-low)')
+    .option('-p, --provider <name>', 'Vision provider name', 'antigravity-cli')
+    .option('--prompt <text>', 'Extra focus for this image')
+    .option('--timeout <ms>', 'Provider timeout in milliseconds', '180000')
+    .option('--provider-bin <path>', 'Provider binary path (default: agy)')
+    .option('--workdir <path>', 'Working directory for the provider command')
+    .action(async (options) => {
+        try {
+            const timeoutMs = Number.parseInt(options.timeout, 10);
+            if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+                throw new Error('Invalid --timeout. Use a positive integer in milliseconds.');
+            }
 
-    if (!extraPrompt || !extraPrompt.trim()) {
-        return basePrompt;
-    }
+            const result = await analyzeImage({
+                input: options.input,
+                provider: options.provider,
+                model: options.model,
+                prompt: options.prompt,
+                timeoutMs,
+                providerBin: options.providerBin,
+                workdir: options.workdir,
+            });
 
-    return `${basePrompt}\n\nAdditional requirements:\n${extraPrompt.trim()}`;
-}
+            const output = JSON.stringify(result, null, 2);
+
+            if (options.output) {
+                const outputPath = path.resolve(options.output);
+                fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+                fs.writeFileSync(outputPath, output, 'utf-8');
+            }
+
+            process.stdout.write(`${output}\n`);
+        } catch (error) {
+            process.stderr.write(
+                `Error: ${error instanceof Error ? error.message : String(error)}\n`,
+            );
+            process.exit(1);
+        }
+    });
+
+program.parse();

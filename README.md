@@ -1,7 +1,28 @@
-# ModLens
+<div align="center">
+  <h1>ModLens</h1>
+  <p><b>Plug-in eyes for text-only LLMs. Free.</b></p>
+  <p>
+    <a href="https://www.npmjs.com/package/@liustack/modlens"><img src="https://img.shields.io/npm/v/@liustack/modlens" alt="npm"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  </p>
+  <p><a href="./README.zh-CN.md">简体中文</a></p>
+</div>
 
-A CLI toolkit for AI agents that converts image sources (local path or remote URL) into structured text evidence, bridging the vision gap for text-only LLM workflows.
+Your favorite model is brilliant but blind. DeepSeek-V4-Flash costs next to nothing and reasons beautifully, yet paste a screenshot and it shrugs: no vision. Same story for every text-only model running inside Claude Code, OpenClaw, Codex, or any Agent Skills harness.
 
+ModLens fixes that with one command. Point it at any image (local path or URL) and it returns structured JSON evidence a text-only model can actually reason over: OCR text, layout regions in reading order, entities, relations, visual clues. The seeing is done by [Antigravity CLI](https://antigravity.google) (`agy`), so it rides Google's free quota, not your API bill.
+
+```text
+your text-only model ──▶ modlens skill (auto-triggers on images)
+                              │
+                              ▼
+                   agy · Gemini 3.6 Flash (free quota)
+                              │
+                              ▼
+              structured JSON evidence ──▶ model answers with sight
+```
+
+Install the skill once, and your agent handles images by itself. No model switch, no API key, no prompt surgery.
 [中文说明](README.zh-CN.md)
 
 ## Features
