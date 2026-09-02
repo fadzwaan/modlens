@@ -1,9 +1,17 @@
 import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-
-import { resolveProvider, type ProviderInvocation } from './providers/index.ts';
-
+import {
+    defaultProviderName,
+    loadConfigFile,
+    resolveProviderSettings,
+    type ModlensConfig,
+} from './config.ts';
+import {
+    resolveProvider,
+    type ProviderInvocation,
+    type ProviderParsedOutput,
+} from './providers/index.ts';
 
 export interface AnalyzeOptions {
     input: string;
@@ -13,6 +21,7 @@ export interface AnalyzeOptions {
     timeoutMs?: number;
     providerBin?: string;
     workdir?: string;
+    config?: ModlensConfig;
 }
 
 export interface AnalyzeResult {
@@ -21,10 +30,10 @@ export interface AnalyzeResult {
     result: unknown;
     meta: {
         generatedAt: string;
-        model: string ;
+        model: string;
         conversationId: string | null;
         durationSeconds: number | null;
-        usage : unkown | null;
+        usage: unknown | null;
     };
 }
 
@@ -48,11 +57,13 @@ export async function analyzeImage(options: AnalyzeOptions): Promise<AnalyzeResu
         validateInputFile(resolvedInput.source);
     }
 
-    const provider = resolveProvider(options.provider);
+    const config = options.config ?? loadConfigFile();
+    const provider = resolveProvider(options.provider || defaultProviderName(config));
+    const settings = resolveProviderSettings(provider.name, config);
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const model = options.model || provider.defaultModel;
+    const model = options.model || settings.model || provider.defaultModel;
 
-    const invocation = provider.buildInvocation({
+    const providerOptions = {
         imageSource: resolvedInput.source,
         imageKind: resolvedInput.kind,
         model,
@@ -60,11 +71,23 @@ export async function analyzeImage(options: AnalyzeOptions): Promise<AnalyzeResu
         providerBin: options.providerBin,
         workdir: options.workdir,
         timeoutMs,
-    });
+        settings,
+    };
 
-
-    const commandResult = await runCommand(provider.name, invocation, timeoutMs + KILL_GRACE_MS);
-    const parsed = provider.parseOutput(commandResult.stdout);
+    let parsed: ProviderParsedOutput;
+    if (provider.execute) {
+        parsed = await provider.execute(providerOptions);
+    } else if (provider.buildInvocation && provider.parseOutput) {
+        const invocation = provider.buildInvocation(providerOptions);
+        const commandResult = await runCommand(
+            provider.name,
+            invocation,
+            timeoutMs + KILL_GRACE_MS,
+        );
+        parsed = provider.parseOutput(commandResult.stdout);
+    } else {
+        throw new Error(`Provider ${provider.name} implements neither execute nor buildInvocation.`);
+    }
 
     return {
         image: resolvedInput.source,
@@ -113,13 +136,12 @@ function validateInputFile(filePath: string): void {
     }
 }
 
-
-
 function runCommand(
     providerName: string,
     invocation: ProviderInvocation,
     timeoutMs: number,
-): Promise<CommandResult> {    return new Promise((resolve, reject) => {
+): Promise<CommandResult> {
+    return new Promise((resolve, reject) => {
         const child = spawn(invocation.command, invocation.args, {
             cwd: invocation.cwd,
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -145,7 +167,11 @@ function runCommand(
         child.on('error', (error) => {
             clearTimeout(timer);
             if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-                reject(new Error(`Gemini CLI not found: ${invocation.command}`));
+                reject(
+                    new Error(
+                        `Provider CLI not found: ${invocation.command}. Install Antigravity CLI and sign in first.`,
+                    ),
+                );
                 return;
             }
             reject(error);
@@ -155,14 +181,14 @@ function runCommand(
             clearTimeout(timer);
 
             if (timedOut) {
-                reject(new Error(`Gemini CLI timed out after ${timeoutMs} ms.`));
+                reject(new Error(`${providerName} provider timed out after ${timeoutMs} ms.`));
                 return;
             }
 
             if (code !== 0) {
                 reject(
                     new Error(
-                        `Gemini CLI failed with code ${code}.${stderr ? ` stderr: ${stderr.trim()}` : ''}`,
+                        `${providerName} provider failed with code ${code}.${stderr ? ` stderr: ${stderr.trim()}` : ''}`,
                     ),
                 );
                 return;
